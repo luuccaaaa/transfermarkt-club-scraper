@@ -1,0 +1,44 @@
+services:
+  transfermarkt_api:
+    build:
+      context: .
+      dockerfile: api/transfermarkt_api/Dockerfile
+    container_name: transfermarkt-api
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./api/transfermarkt_api:/app
+      - ./config/proxies.txt:/app/proxies.txt:ro
+      - ./config/transfermarkt_api.env.example:/app/.env.example:ro
+
+  workflow_app:
+    build:
+      context: .
+      dockerfile: api/workflow_app/Dockerfile
+    container_name: transfermarkt-workflow
+    ports:
+      - "8080:8080"
+    depends_on:
+      - transfermarkt_api
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TRANSFERMARKT_API_BASE_URL=http://transfermarkt_api:8000
+    volumes:
+      - ./:/app
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: transfermarkt-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - workflow_app
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+      - NODE_ENV=development
+    volumes:
+      - ./frontend:/app
