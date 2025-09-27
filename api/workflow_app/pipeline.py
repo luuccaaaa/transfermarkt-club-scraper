@@ -56,6 +56,16 @@ def get_api_base_url() -> str:
     return base_url.rstrip("/")
 
 
+def get_proxy_status(*, base_url: Optional[str] = None) -> Dict[str, object]:
+    url = f"{(base_url or get_api_base_url()).rstrip('/')}/status/proxies"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    enabled = bool(payload.get("enabled"))
+    count = int(payload.get("count", 0)) if payload.get("count") is not None else 0
+    return {"enabled": enabled, "count": count}
+
+
 def fetch_club_profile(club_id: str, base_url: str) -> Dict[str, str]:
     url = f"{base_url}/clubs/{club_id}/profile"
     response = requests.get(url, timeout=30)

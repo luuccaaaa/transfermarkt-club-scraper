@@ -395,6 +395,7 @@ def build_workbook(
         autofit_worksheet(ws)
 
     autofit_worksheet(team_sheet)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
 
 

@@ -18,6 +18,13 @@ type JobResult = {
   selected_fields: string[];
 };
 
+type ProxyStatusState = {
+  loading: boolean;
+  enabled: boolean;
+  count: number;
+  error?: string;
+};
+
 type StreamEvent =
   | { type: "status"; status: string; timestamp?: string }
   | { type: "log"; message: string; timestamp?: string }
@@ -47,8 +54,16 @@ export default function HomePage() {
   const [result, setResult] = useState<JobResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isClient, setIsClient] = useState(false);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatusState>({
+    loading: true,
+    enabled: false,
+    count: 0,
+  });
 
   useEffect(() => {
+    setIsClient(true);
+
     const fetchFields = async () => {
       try {
         const response = await fetch(`${API_BASE}/api/fields`);
@@ -67,7 +82,31 @@ export default function HomePage() {
       }
     };
 
+    const fetchProxyStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/status/proxies`);
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.detail || "Unable to determine proxy status");
+        }
+        const payload = await response.json();
+        setProxyStatus({
+          loading: false,
+          enabled: Boolean(payload?.enabled),
+          count: typeof payload?.count === "number" ? payload.count : Number(payload?.count ?? 0),
+        });
+      } catch (err) {
+        setProxyStatus({
+          loading: false,
+          enabled: false,
+          count: 0,
+          error: err instanceof Error ? err.message : "Unknown error",
+        });
+      }
+    };
+
     fetchFields();
+    fetchProxyStatus();
 
     return () => {
       eventSourceRef.current?.close();
@@ -233,6 +272,30 @@ export default function HomePage() {
             transfermarkt-workflow-console
           </span>
           <div className="ml-auto flex items-center gap-4 text-xs text-slate-400">
+            {isClient && (
+              <span>
+                Proxy:
+                <span
+                  className={`ml-1 ${
+                    proxyStatus.loading
+                      ? "text-yellow-400"
+                      : proxyStatus.error
+                        ? "text-red-400"
+                        : proxyStatus.enabled
+                          ? "text-green-400"
+                          : "text-slate-400"
+                  }`}
+                >
+                  {proxyStatus.loading
+                    ? "checking…"
+                    : proxyStatus.error
+                      ? "offline"
+                      : proxyStatus.enabled
+                        ? `enabled (${proxyStatus.count})`
+                        : "disabled"}
+                </span>
+              </span>
+            )}
             <span>Status: <span className={
               jobStatus === 'completed' ? 'text-green-400' :
               jobStatus === 'failed' ? 'text-red-400' :

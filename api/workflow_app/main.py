@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -198,6 +199,18 @@ async def list_fields() -> dict:
         "fields": [{"id": key, "label": label} for key, label in pipeline.AVAILABLE_FIELDS.items()],
         "default": list(pipeline.DEFAULT_FIELD_ORDER),
     }
+
+
+@app.get("/api/status/proxies")
+async def proxy_status() -> dict:
+    try:
+        return pipeline.get_proxy_status()
+    except requests.RequestException as exc:
+        logger.warning("Unable to reach Transfermarkt API proxy status", exc_info=exc)
+        raise HTTPException(status_code=503, detail="Upstream proxy status unavailable") from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to determine proxy status")
+        raise HTTPException(status_code=500, detail="Failed to determine proxy status") from exc
 
 
 @app.post("/api/run", response_model=RunResponse)
