@@ -9,10 +9,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import tempfile
 import time
-import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List
 from urllib.error import HTTPError, URLError
@@ -25,6 +26,11 @@ DEFAULT_DELAY_SECONDS = 5.0
 DEFAULT_RETRIES = 3
 NON_RETRIABLE_STATUS = {400, 401, 403, 404, 422}
 PROXY_FILE = DATA_DIR / "proxy.txt"
+
+try:
+    DEFAULT_MAX_WORKERS = max(1, int(os.environ.get("AUGMENT_MAX_WORKERS", "4")))
+except ValueError:
+    DEFAULT_MAX_WORKERS = 4
 
 
 def iter_club_files(directory: Path) -> Iterable[Path]:
@@ -143,6 +149,14 @@ def determine_player_id(row: Dict[str, str]) -> str | None:
     return None
 
 
+def _resolve_worker_count(total: int, requested: int | None) -> int:
+    if total <= 0:
+        return 0
+    if requested and requested > 0:
+        return min(requested, total)
+    return min(DEFAULT_MAX_WORKERS, total)
+
+
 def process_club_file(
     path: Path,
     *,
@@ -153,6 +167,7 @@ def process_club_file(
     proxies: List[str] | None,
     base_url: str | None = None,
     logger: Callable[[str], None] | None = None,
+    max_workers: int | None = None,
 ) -> None:
     def log(message: str) -> None:
         if logger:
@@ -168,14 +183,38 @@ def process_club_file(
     ordered_fields = list(fieldnames)
     total_players = len(rows)
 
-    for idx, row in enumerate(rows, start=1):
+    jobs: List[tuple[int, int, str]] = []  # (row_index, display_index, player_id)
+    for display_idx, row in enumerate(rows, start=1):
         player_id = determine_player_id(row)
         if not player_id:
             continue
         if not force and row.get("profile_id"):
             continue
+        jobs.append((display_idx - 1, display_idx, player_id))
 
-        log(f"    Player {idx}/{total_players}: fetching profile for {player_id}")
+    if not jobs:
+        persist_rows(path, rows, ordered_fields)
+        return
+
+    worker_count = _resolve_worker_count(len(jobs), max_workers)
+    log(f"    Using up to {worker_count} parallel player workers")
+
+    def handle_success(row_index: int, flat_profile: Dict[str, str]) -> None:
+        nonlocal ordered_fields
+        row = rows[row_index]
+        row_changed = False
+        for key, value in flat_profile.items():
+            if key not in ordered_fields:
+                ordered_fields.append(key)
+            if row.get(key) != value:
+                row[key] = value
+                row_changed = True
+        if row_changed:
+            persist_rows(path, rows, ordered_fields)
+
+    def process_job(job: tuple[int, int, str]) -> tuple[int, Dict[str, str] | None]:
+        row_index, display_index, player_id = job
+        log(f"    Player {display_index}/{total_players}: fetching profile for {player_id}")
         try:
             profile = fetch_with_retry(
                 player_id,
@@ -191,25 +230,28 @@ def process_club_file(
                 sleep_for = max(delay, cooldown)
                 log(f"      Rate limit suspected; sleeping {sleep_for:.1f}s before continuing")
                 time.sleep(sleep_for)
-            continue
+            return row_index, None
         except (URLError, json.JSONDecodeError, ValueError) as exc:
             log(f"      Failed to process player {player_id}: {exc}")
-            continue
+            return row_index, None
+        else:
+            flat = flatten_profile(profile)
+            return row_index, flat
 
-        flat = flatten_profile(profile)
-        row_changed = False
-        for key, value in flat.items():
-            if key not in ordered_fields:
-                ordered_fields.append(key)
-            if row.get(key) != value:
-                row[key] = value
-                row_changed = True
-
-        if row_changed:
-            persist_rows(path, rows, ordered_fields)
-
-        if idx < total_players:
+    if worker_count <= 1:
+        for job in jobs:
+            row_index, flat_profile = process_job(job)
+            if flat_profile:
+                handle_success(row_index, flat_profile)
             time.sleep(max(0.0, delay))
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {executor.submit(process_job, job): job for job in jobs}
+            for future in as_completed(futures):
+                row_index, flat_profile = future.result()
+                if flat_profile:
+                    handle_success(row_index, flat_profile)
+                time.sleep(max(0.0, delay))
 
     persist_rows(path, rows, ordered_fields)
 
@@ -224,6 +266,8 @@ def main() -> None:
                         help="Seconds between successive API calls (default: 5)")
     parser.add_argument("--max-retries", type=int, default=DEFAULT_RETRIES,
                         help="Max retry attempts for transient failures (default: 3)")
+    parser.add_argument("--max-workers", type=int, default=None,
+                        help="Maximum concurrent player requests (default: env AUGMENT_MAX_WORKERS or 4)")
     parser.add_argument("--force", action="store_true",
                         help="Fetch profiles even if profile columns already exist")
     parser.add_argument("--cooldown", type=float, default=30.0,
@@ -261,6 +305,7 @@ def main() -> None:
                 proxies=proxies,
                 base_url=api_base,
                 logger=None,
+                max_workers=args.max_workers,
             )
         except KeyboardInterrupt:
             print("Interrupted by user; latest progress persisted.")

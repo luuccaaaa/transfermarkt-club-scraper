@@ -60,6 +60,12 @@ export default function HomePage() {
     enabled: false,
     count: 0,
   });
+  const [enableParallel, setEnableParallel] = useState(true);
+  const [parallelWorkers, setParallelWorkers] = useState("4");
+  const [enableRateLimit, setEnableRateLimit] = useState(false);
+  const [rateLimitDelay, setRateLimitDelay] = useState("0.5");
+  const [enableRetry, setEnableRetry] = useState(true);
+  const [maxRetries, setMaxRetries] = useState("3");
 
   useEffect(() => {
     setIsClient(true);
@@ -201,6 +207,13 @@ export default function HomePage() {
       resetJobState();
       setIsSubmitting(true);
       try {
+        const parsedWorkers = Number.parseInt(parallelWorkers, 10);
+        const workerValue = Number.isFinite(parsedWorkers) && parsedWorkers > 0 ? parsedWorkers : null;
+        const parsedDelay = Number.parseFloat(rateLimitDelay);
+        const delayValue = Number.isFinite(parsedDelay) && parsedDelay >= 0 ? parsedDelay : null;
+        const parsedRetries = Number.parseInt(maxRetries, 10);
+        const retryValue = Number.isFinite(parsedRetries) && parsedRetries > 0 ? parsedRetries : null;
+
         const response = await fetch(`${API_BASE}/api/run`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -208,6 +221,12 @@ export default function HomePage() {
             team_ids: clubIds,
             season_id: seasonId.trim() || null,
             fields: selectedFields,
+            enable_parallel: enableParallel,
+            max_parallel_requests: enableParallel ? workerValue : 1,
+            enable_rate_limit: enableRateLimit,
+            rate_limit_delay: enableRateLimit ? (delayValue ?? 0.5) : 0,
+            enable_retry: enableRetry,
+            max_retries: enableRetry ? (retryValue ?? null) : 1,
           }),
         });
         if (!response.ok) {
@@ -225,7 +244,19 @@ export default function HomePage() {
         setIsSubmitting(false);
       }
     },
-    [teamInput, seasonId, selectedFields, resetJobState, startStream]
+    [
+      teamInput,
+      seasonId,
+      selectedFields,
+      resetJobState,
+      startStream,
+      enableParallel,
+      parallelWorkers,
+      enableRateLimit,
+      rateLimitDelay,
+      enableRetry,
+      maxRetries,
+    ]
   );
 
   const toggleField = useCallback(
@@ -421,6 +452,143 @@ export default function HomePage() {
                     </label>
                   );
                 })}
+              </div>
+            </div>
+
+            <div className="space-y-4 border-t border-slate-700 pt-4">
+              <div className="flex items-center gap-2">
+                <span className="text-green-400">$</span>
+                <span className="text-slate-300 text-sm">EXECUTION_OPTIONS</span>
+              </div>
+
+              <div className="space-y-4 text-xs">
+                <div className="space-y-3 rounded border border-slate-700 bg-slate-800/60 p-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-200">
+                        Parallel Requests
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Run club-level requests concurrently with rotating proxies.
+                      </div>
+                    </div>
+                    <label className="relative inline-flex h-6 w-11 cursor-pointer items-center">
+                      <input
+                        type="checkbox"
+                        className="peer sr-only"
+                        checked={enableParallel}
+                        onChange={(event) => setEnableParallel(event.target.checked)}
+                        id="parallel-toggle"
+                      />
+                      <span className="absolute inset-0 rounded-full bg-slate-600 transition-colors peer-checked:bg-green-500" />
+                      <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-5 peer-checked:bg-white" />
+                    </label>
+                  </div>
+                  {enableParallel && (
+                    <div className="flex flex-wrap items-center gap-3 pl-1 text-[11px] text-slate-400">
+                      <label htmlFor="parallel-workers" className="uppercase tracking-wide">
+                        Max workers
+                      </label>
+                      <input
+                        id="parallel-workers"
+                        type="number"
+                        min={1}
+                        value={parallelWorkers}
+                        onChange={(event) => setParallelWorkers(event.target.value)}
+                        placeholder="auto"
+                        className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-green-400 focus:border-green-400 focus:outline-none"
+                      />
+                      <span className="text-slate-500">Leave blank for automatic sizing.</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3 rounded border border-slate-700 bg-slate-800/60 p-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-200">
+                        Rate Limiting
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Add a delay between player profile requests to stay gentle.
+                      </div>
+                    </div>
+                    <label className="relative inline-flex h-6 w-11 cursor-pointer items-center">
+                      <input
+                        type="checkbox"
+                        className="peer sr-only"
+                        checked={enableRateLimit}
+                        onChange={(event) => setEnableRateLimit(event.target.checked)}
+                        id="ratelimit-toggle"
+                      />
+                      <span className="absolute inset-0 rounded-full bg-slate-600 transition-colors peer-checked:bg-green-500" />
+                      <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-5 peer-checked:bg-white" />
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 pl-1 text-[11px] text-slate-400">
+                    <label htmlFor="rate-delay" className="uppercase tracking-wide">
+                      Delay (s)
+                    </label>
+                    <input
+                      id="rate-delay"
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={rateLimitDelay}
+                      onChange={(event) => setRateLimitDelay(event.target.value)}
+                      disabled={!enableRateLimit}
+                      className={`w-24 rounded border px-2 py-1 text-green-400 focus:border-green-400 focus:outline-none ${
+                        enableRateLimit ? "border-slate-700 bg-slate-900" : "border-slate-800 bg-slate-900/50 text-slate-600"
+                      }`}
+                    />
+                    <span className={`text-slate-500 ${enableRateLimit ? "" : "italic"}`}>
+                      Default to 0.5 seconds when enabled.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded border border-slate-700 bg-slate-800/60 p-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-200">
+                        Retry Handling
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Re-attempt player fetches on transient failures.
+                      </div>
+                    </div>
+                    <label className="relative inline-flex h-6 w-11 cursor-pointer items-center">
+                      <input
+                        type="checkbox"
+                        className="peer sr-only"
+                        checked={enableRetry}
+                        onChange={(event) => setEnableRetry(event.target.checked)}
+                        id="retry-toggle"
+                      />
+                      <span className="absolute inset-0 rounded-full bg-slate-600 transition-colors peer-checked:bg-green-500" />
+                      <span className="absolute left-1 top-1 h-4 w-4 rounded-full bg-slate-300 transition-transform peer-checked:translate-x-5 peer-checked:bg-white" />
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 pl-1 text-[11px] text-slate-400">
+                    <label htmlFor="retry-count" className="uppercase tracking-wide">
+                      Attempts
+                    </label>
+                    <input
+                      id="retry-count"
+                      type="number"
+                      min={1}
+                      value={maxRetries}
+                      onChange={(event) => setMaxRetries(event.target.value)}
+                      disabled={!enableRetry}
+                      className={`w-20 rounded border px-2 py-1 text-green-400 focus:border-green-400 focus:outline-none ${
+                        enableRetry ? "border-slate-700 bg-slate-900" : "border-slate-800 bg-slate-900/50 text-slate-600"
+                      }`}
+                    />
+                    <span className={`text-slate-500 ${enableRetry ? "" : "italic"}`}>
+                      Default retry budget is 3 attempts.
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 

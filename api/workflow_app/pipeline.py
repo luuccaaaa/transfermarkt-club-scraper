@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import csv
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -35,6 +36,10 @@ TEAM_WORKBOOK = DATA_DIR / "data" / "exports" / "team_list.xlsx"
 AVAILABLE_FIELDS = get_available_fields()
 
 DEFAULT_API_BASE_URL = os.environ.get("TRANSFERMARKT_API_BASE_URL", "http://localhost:8000")
+try:
+    DEFAULT_MAX_PARALLEL_REQUESTS = max(1, int(os.environ.get("WORKFLOW_MAX_PARALLEL_REQUESTS", "4")))
+except ValueError:
+    DEFAULT_MAX_PARALLEL_REQUESTS = 4
 
 
 @dataclass
@@ -49,6 +54,43 @@ class WorkflowResult:
 
 class WorkflowError(Exception):
     """Raised when the workflow cannot be completed."""
+
+
+def _determine_worker_count(total_items: int, requested: Optional[int]) -> int:
+    if total_items <= 0:
+        return 0
+    desired = requested if requested and requested > 0 else DEFAULT_MAX_PARALLEL_REQUESTS
+    return max(1, min(desired, total_items))
+
+
+def _run_parallel_tasks(
+    items: Sequence[Tuple[int, object]],
+    handler: Callable[[Tuple[int, object]], Tuple[int, object]],
+    *,
+    emit: Callable[[str], None],
+    label: str,
+    max_workers: int,
+) -> List[Tuple[int, object]]:
+    if not items:
+        return []
+
+    worker_count = _determine_worker_count(len(items), max_workers)
+    results: List[Tuple[int, object]] = []
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_item = {executor.submit(handler, item): item for item in items}
+
+        for future in as_completed(future_to_item):
+            item = future_to_item[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                item_repr = item[1] if isinstance(item, tuple) and len(item) > 1 else item
+                emit(f"  Error while {label} for {item_repr}: {exc}")
+                raise WorkflowError(f"Failed while {label} for {item_repr}: {exc}") from exc
+
+    results.sort(key=lambda entry: entry[0])
+    return results
 
 
 def get_api_base_url() -> str:
@@ -169,6 +211,9 @@ def run_workflow(
     base_url: Optional[str] = None,
     selected_fields: Sequence[str] | None = None,
     logger: Callable[[str], None] | None = None,
+    max_parallel_requests: Optional[int] = None,
+    player_request_delay: float = 0.0,
+    player_max_retries: Optional[int] = None,
 ) -> WorkflowResult:
     base = (base_url or get_api_base_url()).rstrip("/")
     team_details: List[Dict[str, str]] = []
@@ -188,14 +233,37 @@ def run_workflow(
     if not team_ids_list:
         raise WorkflowError("No valid club IDs provided.")
 
+    parallel_workers = _determine_worker_count(len(team_ids_list), max_parallel_requests)
+    emit(f"Using up to {parallel_workers} parallel request workers")
+
+    delay_seconds = max(0.0, float(player_request_delay or 0.0))
+    retries = player_max_retries if player_max_retries and player_max_retries > 0 else augment_player_profiles.DEFAULT_RETRIES
+    emit(
+        f"Rate limit delay: {delay_seconds:.2f}s" if delay_seconds else "Rate limit delay: disabled"
+    )
+    retry_message = f"Player retries: {retries}"
+    if player_max_retries is None:
+        retry_message += " (default)"
+    emit(retry_message)
+
     emit("Step 1: fetching club profiles")
 
-    # Step 1: fetch club profiles to gather names
-    for club_id in team_ids_list:
+    def _profile_worker(item: Tuple[int, str]) -> Tuple[int, dict[str, str]]:
+        idx, club_id = item
         profile = fetch_club_profile(club_id, base)
         club_name = extract_club_name(profile, club_id)
-        team_details.append({"club_id": club_id, "club_name": club_name})
         emit(f"  Retrieved profile: {club_id} — {club_name}")
+        return idx, {"club_id": club_id, "club_name": club_name}
+
+    profile_results = _run_parallel_tasks(
+        list(enumerate(team_ids_list)),
+        _profile_worker,
+        emit=emit,
+        label="fetching club profile",
+        max_workers=parallel_workers,
+    )
+
+    team_details.extend(detail for _, detail in profile_results)
 
     # Step 2: persist club IDs CSV
     emit("Step 2: writing club_ids.csv")
@@ -206,11 +274,23 @@ def run_workflow(
     CLUBS_DIR.mkdir(parents=True, exist_ok=True)
     generated_csvs: List[Path] = []
     emit("Step 3: fetching players and exporting CSVs")
-    for details in team_details:
+
+    def _player_worker(item: Tuple[int, dict[str, str]]) -> Tuple[int, Path]:
+        idx, details = item
         payload = fetch_club_players(details["club_id"], base, season_id)
         csv_path = generate_player_csv(details["club_id"], details["club_name"], payload)
-        generated_csvs.append(csv_path)
         emit(f"  Exported roster CSV: {csv_path.name}")
+        return idx, csv_path
+
+    player_results = _run_parallel_tasks(
+        list(enumerate(team_details)),
+        _player_worker,
+        emit=emit,
+        label="fetching club roster",
+        max_workers=parallel_workers,
+    )
+
+    generated_csvs.extend(path for _, path in player_results)
 
     # Step 4: augment player CSVs
     augmented_csvs: List[Path] = []
@@ -219,13 +299,14 @@ def run_workflow(
         emit(f"  Augmenting {csv_path.name}")
         augment_player_profiles.process_club_file(
             csv_path,
-            delay=0.0,
-            retries=augment_player_profiles.DEFAULT_RETRIES,
+            delay=delay_seconds,
+            retries=retries,
             force=True,
             cooldown=30.0,
             proxies=None,
             base_url=base,
             logger=emit,
+            max_workers=parallel_workers,
         )
         augmented_csvs.append(csv_path)
 

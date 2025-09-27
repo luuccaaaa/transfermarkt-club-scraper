@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from app.services.base import TransfermarktBase
 from app.utils.regex import REGEX_BG_COLOR, REGEX_COUNTRY_ID, REGEX_MEMBERS_DATE
@@ -35,13 +36,24 @@ class TransfermarktClubProfile(TransfermarktBase):
         Returns:
             dict: A dictionary containing the club's profile information.
         """
+        def text_or_default(xpath: str, default: str = "") -> str:
+            value = self.get_text_by_xpath(xpath)
+            return value if value is not None else default
+
+        def numeric_or_default(value: Optional[str], default: str = "0") -> str:
+            if value and any(char.isdigit() for char in value):
+                return value
+            return default
+
         self.response["id"] = self.club_id
-        self.response["url"] = self.get_text_by_xpath(Clubs.Profile.URL)
-        self.response["name"] = self.get_text_by_xpath(Clubs.Profile.NAME)
-        self.response["officialName"] = self.get_text_by_xpath(Clubs.Profile.NAME_OFFICIAL)
-        self.response["image"] = safe_split(self.get_text_by_xpath(Clubs.Profile.IMAGE), "?")[0]
+        self.response["url"] = text_or_default(Clubs.Profile.URL)
+        self.response["name"] = text_or_default(Clubs.Profile.NAME)
+        self.response["officialName"] = text_or_default(Clubs.Profile.NAME_OFFICIAL)
+        image_raw = self.get_text_by_xpath(Clubs.Profile.IMAGE)
+        image_parts = safe_split(image_raw, "?") or []
+        self.response["image"] = image_parts[0] if image_parts else image_raw or ""
         self.response["legalForm"] = self.get_text_by_xpath(Clubs.Profile.LEGAL_FORM)
-        self.response["addressLine1"] = self.get_text_by_xpath(Clubs.Profile.ADDRESS_LINE_1)
+        self.response["addressLine1"] = text_or_default(Clubs.Profile.ADDRESS_LINE_1)
         self.response["addressLine2"] = self.get_text_by_xpath(Clubs.Profile.ADDRESS_LINE_2)
         self.response["addressLine3"] = self.get_text_by_xpath(Clubs.Profile.ADDRESS_LINE_3)
         self.response["tel"] = self.get_text_by_xpath(Clubs.Profile.TEL)
@@ -60,9 +72,11 @@ class TransfermarktClubProfile(TransfermarktBase):
             for color in self.get_list_by_xpath(Clubs.Profile.COLORS)
             if "#" in color
         ]
-        self.response["stadiumName"] = self.get_text_by_xpath(Clubs.Profile.STADIUM_NAME)
-        self.response["stadiumSeats"] = remove_str(self.get_text_by_xpath(Clubs.Profile.STADIUM_SEATS), ["Seats", "."])
-        self.response["currentTransferRecord"] = self.get_text_by_xpath(Clubs.Profile.TRANSFER_RECORD)
+        self.response["stadiumName"] = text_or_default(Clubs.Profile.STADIUM_NAME)
+        stadium_seats = remove_str(self.get_text_by_xpath(Clubs.Profile.STADIUM_SEATS), ["Seats", "."])
+        self.response["stadiumSeats"] = numeric_or_default(stadium_seats)
+        transfer_record = self.get_text_by_xpath(Clubs.Profile.TRANSFER_RECORD)
+        self.response["currentTransferRecord"] = numeric_or_default(transfer_record)
         self.response["currentMarketValue"] = self.get_text_by_xpath(
             Clubs.Profile.MARKET_VALUE,
             iloc_to=3,
@@ -71,10 +85,10 @@ class TransfermarktClubProfile(TransfermarktBase):
         self.response["confederation"] = self.get_text_by_xpath(Clubs.Profile.CONFEDERATION)
         self.response["fifaWorldRanking"] = remove_str(self.get_text_by_xpath(Clubs.Profile.RANKING), "Pos")
         self.response["squad"] = {
-            "size": self.get_text_by_xpath(Clubs.Profile.SQUAD_SIZE),
-            "averageAge": self.get_text_by_xpath(Clubs.Profile.SQUAD_AVG_AGE),
-            "foreigners": self.get_text_by_xpath(Clubs.Profile.SQUAD_FOREIGNERS),
-            "nationalTeamPlayers": self.get_text_by_xpath(Clubs.Profile.SQUAD_NATIONAL_PLAYERS),
+            "size": numeric_or_default(self.get_text_by_xpath(Clubs.Profile.SQUAD_SIZE)),
+            "averageAge": numeric_or_default(self.get_text_by_xpath(Clubs.Profile.SQUAD_AVG_AGE)),
+            "foreigners": numeric_or_default(self.get_text_by_xpath(Clubs.Profile.SQUAD_FOREIGNERS)),
+            "nationalTeamPlayers": numeric_or_default(self.get_text_by_xpath(Clubs.Profile.SQUAD_NATIONAL_PLAYERS)),
         }
         self.response["league"] = {
             "id": extract_from_url(self.get_text_by_xpath(Clubs.Profile.LEAGUE_ID)),
@@ -84,7 +98,9 @@ class TransfermarktClubProfile(TransfermarktBase):
             "tier": self.get_text_by_xpath(Clubs.Profile.LEAGUE_TIER),
         }
         self.response["historicalCrests"] = [
-            safe_split(crest, "?")[0] for crest in self.get_list_by_xpath(Clubs.Profile.CRESTS_HISTORICAL)
+            (safe_split(crest, "?") or [crest])[0]
+            for crest in self.get_list_by_xpath(Clubs.Profile.CRESTS_HISTORICAL)
+            if crest
         ]
 
         return self.response

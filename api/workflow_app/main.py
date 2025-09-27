@@ -126,6 +126,12 @@ class RunRequest(BaseModel):
     team_ids: List[str] = Field(default_factory=list, description="List of Transfermarkt club IDs")
     season_id: Optional[str] = Field(default=None, description="Optional season filter")
     fields: List[str] = Field(default_factory=list, description="Custom workbook field order")
+    enable_parallel: bool = Field(default=True, description="Enable concurrent API requests")
+    max_parallel_requests: Optional[int] = Field(default=None, ge=1, description="Maximum concurrent requests")
+    enable_rate_limit: bool = Field(default=False, description="Apply delay between player profile requests")
+    rate_limit_delay: Optional[float] = Field(default=None, ge=0.0, description="Delay between player profile requests in seconds")
+    enable_retry: bool = Field(default=True, description="Retry failed player profile requests")
+    max_retries: Optional[int] = Field(default=None, ge=1, description="Maximum retry attempts per player")
 
     @validator("team_ids", pre=True)
     def _coerce_ids(cls, value):  # type: ignore[override]
@@ -152,12 +158,41 @@ class RunRequest(BaseModel):
             return [str(item).strip() for item in value if str(item).strip()]
         raise ValueError("fields must be an array or string")
 
+    @validator("max_parallel_requests", "max_retries", pre=True)
+    def _coerce_optional_int(cls, value):  # type: ignore[override]
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError("Value must be an integer") from exc
+
+    @validator("rate_limit_delay", pre=True)
+    def _coerce_optional_float(cls, value):  # type: ignore[override]
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError("Value must be a float") from exc
+
 
 class RunResponse(BaseModel):
     job_id: str
 
 
-async def launch_job(team_ids: List[str], season_id: Optional[str], fields: List[str]) -> Job:
+async def launch_job(
+    team_ids: List[str],
+    season_id: Optional[str],
+    fields: List[str],
+    *,
+    enable_parallel: bool,
+    max_parallel_requests: Optional[int],
+    enable_rate_limit: bool,
+    rate_limit_delay: Optional[float],
+    enable_retry: bool,
+    max_retries: Optional[int],
+) -> Job:
     loop = asyncio.get_running_loop()
     job_id = uuid4().hex
     job = Job(job_id, loop)
@@ -166,6 +201,29 @@ async def launch_job(team_ids: List[str], season_id: Optional[str], fields: List
     job.log(f"Received {len(team_ids)} club IDs")
     if fields:
         job.log(f"Selected workbook fields: {', '.join(fields)}")
+
+    if enable_parallel:
+        parallel_limit = max_parallel_requests if max_parallel_requests and max_parallel_requests > 0 else None
+        parallel_note = f"limit {parallel_limit}" if parallel_limit else "auto"
+        job.log(f"Parallel requests: enabled ({parallel_note})")
+    else:
+        parallel_limit = 1
+        job.log("Parallel requests: disabled (serial mode)")
+
+    if enable_rate_limit:
+        request_delay = max(rate_limit_delay if rate_limit_delay is not None else 0.5, 0.0)
+        job.log(f"Rate limit delay: {request_delay:.2f}s")
+    else:
+        request_delay = 0.0
+        job.log("Rate limit delay: disabled")
+
+    if enable_retry:
+        retry_limit = max_retries if max_retries and max_retries > 0 else None
+        retry_note = "default" if retry_limit is None else str(retry_limit)
+        job.log(f"Player retries: {retry_note}")
+    else:
+        retry_limit = 1
+        job.log("Player retries: disabled")
 
     async def runner() -> None:
         job.set_status("running")
@@ -176,6 +234,9 @@ async def launch_job(team_ids: List[str], season_id: Optional[str], fields: List
                 season_id=season_id or None,
                 selected_fields=fields or None,
                 logger=job.log,
+                max_parallel_requests=parallel_limit,
+                player_request_delay=request_delay,
+                player_max_retries=retry_limit,
             )
         except pipeline.WorkflowError as exc:
             job.fail(str(exc))
@@ -218,7 +279,17 @@ async def api_run(payload: RunRequest) -> RunResponse:
     if not payload.team_ids:
         raise HTTPException(status_code=400, detail="Provide at least one club ID")
     fields = [field for field in payload.fields if field in pipeline.AVAILABLE_FIELDS]
-    job = await launch_job(payload.team_ids, payload.season_id, fields)
+    job = await launch_job(
+        payload.team_ids,
+        payload.season_id,
+        fields,
+        enable_parallel=payload.enable_parallel,
+        max_parallel_requests=payload.max_parallel_requests,
+        enable_rate_limit=payload.enable_rate_limit,
+        rate_limit_delay=payload.rate_limit_delay,
+        enable_retry=payload.enable_retry,
+        max_retries=payload.max_retries,
+    )
     return RunResponse(job_id=job.id)
 
 
