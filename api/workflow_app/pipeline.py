@@ -236,6 +236,11 @@ def run_workflow(
     parallel_workers = _determine_worker_count(len(team_ids_list), max_parallel_requests)
     emit(f"Using up to {parallel_workers} parallel request workers")
 
+    if max_parallel_requests and max_parallel_requests > 0:
+        player_worker_limit = max_parallel_requests
+    else:
+        player_worker_limit = augment_player_profiles.DEFAULT_MAX_WORKERS
+
     delay_seconds = max(0.0, float(player_request_delay or 0.0))
     retries = player_max_retries if player_max_retries and player_max_retries > 0 else augment_player_profiles.DEFAULT_RETRIES
     emit(
@@ -306,7 +311,7 @@ def run_workflow(
             proxies=None,
             base_url=base,
             logger=emit,
-            max_workers=parallel_workers,
+            max_workers=player_worker_limit,
         )
         augmented_csvs.append(csv_path)
 

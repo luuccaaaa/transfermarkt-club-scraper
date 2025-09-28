@@ -372,7 +372,7 @@ def build_workbook(
     resolved_fields = resolve_fields(field_ids)
 
     for team_name, rows in club_rows:
-        team_sheet.append([team_name])
+        team_sheet.append(["", team_name])
 
         sheet_name = sanitise_sheet_name(team_name, used_sheet_names)
         ws = wb.create_sheet(title=sheet_name)
